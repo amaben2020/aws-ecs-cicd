@@ -1,0 +1,123 @@
+services:
+  # -------------------------------------------------------------
+  # Users Microservice (Publishes Events)
+  # -------------------------------------------------------------
+  users-service:
+    build:
+      context: ./users-service
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=postgres://postgres:password@local-postgres:5432/postgres
+      - REDIS_URL=redis://local-redis:6379
+    depends_on:
+      local-postgres:
+        condition: service_healthy
+      local-redis:
+        condition: service_healthy
+    networks:
+      - mesh-network
+
+  # -------------------------------------------------------------
+  # Orders Microservice (Subscribes to Events)
+  # -------------------------------------------------------------
+  orders-service:
+    build:
+      context: ./orders-service
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=postgres://postgres:password@local-postgres:5432/postgres
+      - REDIS_URL=redis://local-redis:6379
+    depends_on:
+      local-postgres:
+        condition: service_healthy
+      local-redis:
+        condition: service_healthy
+    networks:
+      - mesh-network
+
+  # -------------------------------------------------------------
+  # Shared Local PostgreSQL DB
+  # -------------------------------------------------------------
+  local-postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init-db:/docker-entrypoint-initdb.d
+      - local_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mesh-network
+
+  # -------------------------------------------------------------
+  # Shared Local Redis Event Broker
+  # -------------------------------------------------------------
+  local-redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - local_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - mesh-network
+
+  # -------------------------------------------------------------
+  # Metrics Collector (Prometheus)
+  # -------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - local_prom_data:/prometheus
+    depends_on:
+      - users-service
+      - orders-service
+    networks:
+      - mesh-network
+
+  # -------------------------------------------------------------
+  # Dashboard UI (Grafana)
+  # -------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3003:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - local_grafana_data:/var/lib/grafana
+    networks:
+      - mesh-network
+
+volumes:
+  local_pg_data:
+  local_redis_data:
+  local_prom_data:
+  local_grafana_data:
+
+networks:
+  mesh-network:
+    driver: bridge

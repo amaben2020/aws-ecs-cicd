@@ -1,0 +1,116 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+
+jobs:
+  # =========================================================================
+  # JOB 1: Environment Orchestrator (Determines where traffic is going)
+  # =========================================================================
+  orchestrate:
+    name: Determine Environment
+    runs-on: ubuntu-latest
+    outputs:
+      env_name: ${{ steps.set-env.outputs.env_name }}
+      aws_env: ${{ steps.set-env.outputs.aws_env }}
+    steps:
+      - id: set-env
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "env_name=production" >> $GITHUB_OUTPUT
+            echo "aws_env=prod" >> $GITHUB_OUTPUT
+          else
+            echo "env_name=staging" >> $GITHUB_OUTPUT
+            echo "aws_env=staging" >> $GITHUB_OUTPUT
+          fi
+
+  # =========================================================================
+  # JOB 2: Secure AWS Authentication
+  # =========================================================================
+  authenticate:
+    name: Validate AWS Connectivity
+    needs: orchestrate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+  # =========================================================================
+  # JOB 3: Container Build & Publish (Compiles Multi-Stage Node.js App)
+  # =========================================================================
+  build-and-push:
+    name: Build & Push Artifact
+    needs: [orchestrate, authenticate]
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build-image.outputs.image }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compile and Push Container
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: my-node-app-${{ needs.orchestrate.outputs.aws_env }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  # =========================================================================
+  # JOB 4: AWS ECS Deployment Management (Updates infrastructure rolling update)
+  # =========================================================================
+  deploy-to-ecs:
+    name: Rollout to Infrastructure
+    needs: [orchestrate, build-and-push]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.orchestrate.outputs.env_name }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Fetch Remote Task Definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition my-node-app-${{ needs.orchestrate.outputs.aws_env }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Update Target Container Image
+        id: render-web-app
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: web-app
+          image: ${{ needs.build-and-push.outputs.image_uri }}
+
+      - name: Trigger Rolling Update on AWS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-web-app.outputs.task-definition }}
+          service: my-node-service-${{ needs.orchestrate.outputs.aws_env }}
+          cluster: my-ecs-cluster-${{ needs.orchestrate.outputs.aws_env }}
+          wait-for-service-stability: true
