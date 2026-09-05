@@ -1,18 +1,30 @@
 global:
   scrape_interval: 15s
+  # external_labels are attached only when metrics LEAVE this Prometheus
+  # (remote_write to Grafana Cloud, federation, alerts) - NOT to locally
+  # stored series. That is why each scrape job below also sets env directly:
+  # scrape-time labels are what local dashboard queries can filter on.
+  external_labels:
+    env: dev
 
 scrape_configs:
   - job_name: 'api-gateway'
     scrape_interval: 5s
     static_configs:
       - targets: ['api-gateway:3000']
+        labels:
+          env: dev
 
   - job_name: 'users-microservice'
     scrape_interval: 5s
     static_configs:
       - targets: ['users-service:3000']
+        labels:
+          env: dev
 
   - job_name: 'orders-microservice'
     scrape_interval: 5s
     static_configs:
       - targets: ['orders-service:3000']
+        labels:
+          env: dev
