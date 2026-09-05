@@ -67,6 +67,18 @@ jobs:
       matrix:
         service: [users-service, orders-service]
     steps:
+      # TEMPORARY DIAGNOSTIC - remove once credentials are confirmed working.
+      # Prints only lengths, never values. Expected: 20 and 40.
+      # 0 means the secret is not visible to this job (wrong name or wrong scope);
+      # 21/41 means a trailing newline or space got saved into the value.
+      - name: Verify AWS secrets are visible to this job
+        env:
+          KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          echo "AWS_ACCESS_KEY_ID length:     ${#KEY_ID} (expected 20)"
+          echo "AWS_SECRET_ACCESS_KEY length: ${#SECRET_KEY} (expected 40)"
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
