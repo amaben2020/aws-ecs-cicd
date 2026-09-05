@@ -65,20 +65,15 @@ jobs:
     environment: AWS-EKS
     strategy:
       matrix:
-        service: [users-service, orders-service]
+        # `container` is the container name inside the ECS task definition, which
+        # does not match the service/directory name. Verified against all four
+        # task definitions (prod and staging) via ecs:DescribeTaskDefinition.
+        include:
+          - service: users-service
+            container: users-app
+          - service: orders-service
+            container: orders-app
     steps:
-      # TEMPORARY DIAGNOSTIC - remove once credentials are confirmed working.
-      # Prints only lengths, never values. Expected: 20 and 40.
-      # 0 means the secret is not visible to this job (wrong name or wrong scope);
-      # 21/41 means a trailing newline or space got saved into the value.
-      - name: Verify AWS secrets are visible to this job
-        env:
-          KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: |
-          echo "AWS_ACCESS_KEY_ID length:     ${#KEY_ID} (expected 20)"
-          echo "AWS_SECRET_ACCESS_KEY length: ${#SECRET_KEY} (expected 40)"
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -112,7 +107,7 @@ jobs:
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
-          container-name: ${{ matrix.service }}
+          container-name: ${{ matrix.container }}
           image: ${{ steps.resolve.outputs.image }}
 
       - name: Trigger Rolling Update on AWS
