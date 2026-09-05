@@ -40,77 +40,88 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: eu-north-1
 
   # =========================================================================
-  # JOB 3: Container Build & Publish (Compiles Multi-Stage Node.js App)
+  # JOB 3: Container Build & Publish (per microservice)
   # =========================================================================
   build-and-push:
-    name: Build & Push Artifact
+    name: Build & Push ${{ matrix.service }}
     needs: [orchestrate, authenticate]
     runs-on: ubuntu-latest
-    outputs:
-      image_uri: ${{ steps.build-image.outputs.image }}
+    strategy:
+      matrix:
+        service: [users-service, orders-service]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Compile and Push Container
-        id: build-image
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: my-node-app-${{ needs.orchestrate.outputs.aws_env }}
+          DOCKERHUB_REPO: algomachine007/${{ matrix.service }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          docker build -t $DOCKERHUB_REPO:$IMAGE_TAG ./${{ matrix.service }}
+          docker push $DOCKERHUB_REPO:$IMAGE_TAG
 
   # =========================================================================
-  # JOB 4: AWS ECS Deployment Management (Updates infrastructure rolling update)
+  # JOB 4: AWS ECS Deployment Management (rolling update, per microservice)
   # =========================================================================
   deploy-to-ecs:
-    name: Rollout to Infrastructure
+    name: Rollout ${{ matrix.service }}
     needs: [orchestrate, build-and-push]
     runs-on: ubuntu-latest
     environment: ${{ needs.orchestrate.outputs.env_name }}
+    strategy:
+      matrix:
+        service: [users-service, orders-service]
     steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: eu-north-1
+
+      # The image URI is fully deterministic (Docker Hub repo + commit sha), so it's
+      # reconstructed here rather than passed through build-and-push's outputs —
+      # matrix jobs share one job-level outputs map, so the last matrix branch to finish
+      # would silently clobber whatever the other branch wrote there.
+      - name: Resolve task family and image for this service
+        id: resolve
+        run: |
+          if [ "${{ needs.orchestrate.outputs.aws_env }}" = "prod" ]; then
+            family="${{ matrix.service }}-task"
+          else
+            family="${{ matrix.service }}-staging-task"
+          fi
+          echo "family=$family" >> $GITHUB_OUTPUT
+          echo "image=docker.io/algomachine007/${{ matrix.service }}:${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Fetch Remote Task Definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition my-node-app-${{ needs.orchestrate.outputs.aws_env }} \
+            --task-definition ${{ steps.resolve.outputs.family }} \
             --query taskDefinition > task-definition.json
 
       - name: Update Target Container Image
-        id: render-web-app
+        id: render-container
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
-          container-name: web-app
-          image: ${{ needs.build-and-push.outputs.image_uri }}
+          container-name: ${{ matrix.service }}
+          image: ${{ steps.resolve.outputs.image }}
 
       - name: Trigger Rolling Update on AWS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
-          task-definition: ${{ steps.render-web-app.outputs.task-definition }}
-          service: my-node-service-${{ needs.orchestrate.outputs.aws_env }}
+          task-definition: ${{ steps.render-container.outputs.task-definition }}
+          service: ${{ steps.resolve.outputs.family }}-service
           cluster: my-ecs-cluster-${{ needs.orchestrate.outputs.aws_env }}
           wait-for-service-stability: true
