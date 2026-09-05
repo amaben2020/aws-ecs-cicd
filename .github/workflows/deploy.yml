@@ -14,16 +14,13 @@ jobs:
     name: Determine Environment
     runs-on: ubuntu-latest
     outputs:
-      env_name: ${{ steps.set-env.outputs.env_name }}
       aws_env: ${{ steps.set-env.outputs.aws_env }}
     steps:
       - id: set-env
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
-            echo "env_name=production" >> $GITHUB_OUTPUT
             echo "aws_env=prod" >> $GITHUB_OUTPUT
           else
-            echo "env_name=staging" >> $GITHUB_OUTPUT
             echo "aws_env=staging" >> $GITHUB_OUTPUT
           fi
 
@@ -34,6 +31,9 @@ jobs:
     name: Build & Push ${{ matrix.service }}
     needs: orchestrate
     runs-on: ubuntu-latest
+    # DOCKERHUB_USERNAME/DOCKERHUB_TOKEN live in the AWS-EKS environment, and
+    # environment secrets are only readable by jobs that declare that environment.
+    environment: AWS-EKS
     strategy:
       matrix:
         service: [users-service, orders-service]
@@ -56,13 +56,13 @@ jobs:
           docker push $DOCKERHUB_REPO:$IMAGE_TAG
 
   # =========================================================================
-  # JOB 4: AWS ECS Deployment Management (rolling update, per microservice)
+  # JOB 3: AWS ECS Deployment Management (rolling update, per microservice)
   # =========================================================================
   deploy-to-ecs:
     name: Rollout ${{ matrix.service }}
     needs: [orchestrate, build-and-push]
     runs-on: ubuntu-latest
-    environment: ${{ needs.orchestrate.outputs.env_name }}
+    environment: AWS-EKS
     strategy:
       matrix:
         service: [users-service, orders-service]
