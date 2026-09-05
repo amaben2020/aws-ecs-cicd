@@ -28,26 +28,11 @@ jobs:
           fi
 
   # =========================================================================
-  # JOB 2: Secure AWS Authentication
-  # =========================================================================
-  authenticate:
-    name: Validate AWS Connectivity
-    needs: orchestrate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-north-1
-
-  # =========================================================================
-  # JOB 3: Container Build & Publish (per microservice)
+  # JOB 2: Container Build & Publish (per microservice)
   # =========================================================================
   build-and-push:
     name: Build & Push ${{ matrix.service }}
-    needs: [orchestrate, authenticate]
+    needs: orchestrate
     runs-on: ubuntu-latest
     strategy:
       matrix:
