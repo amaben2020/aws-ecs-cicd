@@ -10,7 +10,70 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+const httpRequestDuration = new client.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+const httpRequestsTotal = new client.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status_code'],
+  registers: [register],
+});
+
+new client.Gauge({
+  name: 'pg_pool_total_count',
+  help: 'Total number of clients in the pg pool',
+  registers: [register],
+  collect() {
+    this.set(pool.totalCount);
+  },
+});
+
+new client.Gauge({
+  name: 'pg_pool_idle_count',
+  help: 'Number of idle clients in the pg pool',
+  registers: [register],
+  collect() {
+    this.set(pool.idleCount);
+  },
+});
+
+new client.Gauge({
+  name: 'pg_pool_waiting_count',
+  help: 'Number of queued requests waiting for a client',
+  registers: [register],
+  collect() {
+    this.set(pool.waitingCount);
+  },
+});
+
+// RED metrics (Rate, Errors, Duration) for every request except the scrape endpoint itself
+app.use((req, res, next) => {
+  if (req.path === '/metrics') return next();
+  const end = httpRequestDuration.startTimer();
+  res.on('finish', () => {
+    const route = req.route ? req.baseUrl + req.route.path : req.path;
+    const labels = { method: req.method, route, status_code: res.statusCode };
+    end(labels);
+    httpRequestsTotal.inc(labels);
+  });
+  next();
+});
+
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error(err);
+    res.status(503).json({ status: 'error', error: 'database unreachable' });
+  }
+});
 
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', register.contentType);
@@ -60,7 +123,7 @@ app.post('/orders', async (req, res) => {
   }
 });
 
-const port = process.env.PORT || 5002;
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`orders-service listening on port ${port}`);
 });
