@@ -280,26 +280,33 @@ dashboard from `grafana/provisioning/` and `grafana/dashboards/`.
 
 ---
 
-## 7. ⚠️ OUTSTANDING: database schema not applied
+## 7. Database schema
 
-`GET /users` currently returns **500** while `/health` returns 200. `/health`
-runs `SELECT 1` (connection works); the failure is the query against the `users`
-table, which does not exist. `init-db/init.sql` has only ever run against the
-local docker-compose Postgres.
+Each service owns a **separate** Neon database, so the schema is split. Postgres
+cannot enforce a foreign key across databases, which is why `schema/orders.sql`
+declares `user_id` without a FK to `users(id)` — referential integrity between
+the two is the application's responsibility.
+
+| File | Applies to | Contents |
+|---|---|---|
+| `schema/users.sql` | users DB (prod + staging) | `users` table |
+| `schema/orders.sql` | orders DB (prod + staging) | `orders` table, no FK, index on `user_id` |
+| `init-db/init.sql` | **local docker-compose only** | both tables in one DB, FK intact |
 
 ```bash
-# Verify (expect: no 'users' relation)
-psql "<PROD_DATABASE_URL_USERS>" -c "\dt"
+psql "<USERS_DB_URL>"  -v ON_ERROR_STOP=1 -f schema/users.sql
+psql "<ORDERS_DB_URL>" -v ON_ERROR_STOP=1 -f schema/orders.sql
 
-# Apply
-psql "<PROD_DATABASE_URL_USERS>" -f init-db/init.sql
+# verify
+psql "<USERS_DB_URL>" -c "\dt"
 ```
 
-> **Split the schema first.** `init-db/init.sql` creates `orders` with a foreign
-> key to `users(id)`. Users and orders live in **separate Neon databases**, and
-> Postgres cannot enforce a cross-database foreign key. Apply only the `users`
-> table to the users DB, and an `orders` table **without** the FK constraint to
-> the orders DB.
+Both files are idempotent (`CREATE TABLE IF NOT EXISTS`), so re-running is safe.
+
+**Status:** applied to both prod databases — `users` and `orders` tables exist,
+and `GET`/`POST /users` verified working through the ALB. **Not yet applied to
+the two staging databases** (the staging credentials on hand failed
+authentication — they appear to reuse the prod passwords).
 
 ---
 
@@ -406,7 +413,7 @@ curl -s -w '\n%{http_code}\n' http://ecs-alb-1679717735.eu-north-1.elb.amazonaws
 
 | Gap | Impact |
 |---|---|
-| `users` table missing in prod DB (§7) | `/users` returns 500 |
+| Staging DB schema not applied (§7) | staging deploys will 500 on table access |
 | orders-service in wrong VPC (§8) | orders unreachable via ALB |
 | No auth in production | `api-gateway` (helmet, rate limit, API key) is docker-compose only; ALB routes straight to services |
 | `REDIS_URL` set but unused | Dead config in compose and task definitions |
