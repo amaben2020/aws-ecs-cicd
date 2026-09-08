@@ -14,7 +14,18 @@ const httpRequestDuration = new client.Histogram({
   name: 'http_request_duration_seconds',
   help: 'Duration of HTTP requests in seconds',
   labelNames: ['method', 'route', 'status_code'],
-  buckets: [0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 5],
+  // Buckets must bracket the latency you actually serve, with the most
+  // resolution where your traffic and SLOs live. These start at 0.5ms because
+  // p50 here is ~1.5ms; the old set started at 10ms, so 99.96% of requests fell
+  // into the first bucket and histogram_quantile could only interpolate,
+  // reporting a fabricated p50 of exactly 5ms and p95 of exactly 9.5ms.
+  // 0.1 and 0.5 are exact boundaries so latency SLOs at 100ms/500ms can be
+  // computed without interpolation error. Cost: one time series per bucket per
+  // label combination.
+  buckets: [
+    0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025,
+    0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+  ],
   registers: [register],
 });
 
